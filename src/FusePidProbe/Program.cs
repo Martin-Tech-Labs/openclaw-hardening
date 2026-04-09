@@ -10,9 +10,6 @@ using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 
-#if NET5_0_OR_GREATER
-[SupportedOSPlatform("macos")]
-#endif
 internal static class Program
 {
     private static int Main(string[] args)
@@ -53,9 +50,6 @@ internal static class Program
     }
 }
 
-#if NET5_0_OR_GREATER
-[SupportedOSPlatform("macos")]
-#endif
 internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 {
     private const string ProbePath = "/probe.txt";
