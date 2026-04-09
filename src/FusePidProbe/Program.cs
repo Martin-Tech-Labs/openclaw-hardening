@@ -29,8 +29,9 @@ internal static class Program
         var fuseArgs = new[] { "-f", "-s", mountPoint };
         using var service = new FuseService(new ProbeOperations(), fuseArgs);
         Console.WriteLine($"Mounting test filesystem at {mountPoint}");
-        Console.WriteLine("Running in foreground (-f), press Ctrl+C to stop.");
+        Console.WriteLine("Press any key to quit.");
         service.Start();
+        Console.ReadKey(intercept: true);
         return 0;
     }
 }
