@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
 
 #if NET5_0_OR_GREATER
 [SupportedOSPlatform("macos")]
@@ -27,10 +28,26 @@ internal static class Program
         Directory.CreateDirectory(mountPoint);
 
         var fuseArgs = new[] { "-f", "-s", mountPoint };
-        using var service = new FuseService(new ProbeOperations(), fuseArgs);
+        using var mountStarted = new ManualResetEventSlim(false);
+        using var service = new FuseService(new ProbeOperations(() => mountStarted.Set()), fuseArgs);
+
+        service.Dismounting += (_, _) => Console.WriteLine("[service] Dismounting");
+        service.Stopped += (_, _) => Console.WriteLine("[service] Stopped");
+        service.Error += (_, e) => Console.WriteLine($"[service] Error: {e.Exception}");
+
         Console.WriteLine($"Mounting test filesystem at {mountPoint}");
         Console.WriteLine("Press any key to quit.");
         service.Start();
+
+        if (mountStarted.Wait(TimeSpan.FromSeconds(3)))
+        {
+            Console.WriteLine("[service] Init callback received, mount likely established.");
+        }
+        else
+        {
+            Console.WriteLine("[service] No init callback within 3s, mount may have failed or not started.");
+        }
+
         Console.ReadKey(intercept: true);
         return 0;
     }
@@ -39,7 +56,7 @@ internal static class Program
 #if NET5_0_OR_GREATER
 [SupportedOSPlatform("macos")]
 #endif
-internal sealed class ProbeOperations : IFuseOperations
+internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 {
     private const string ProbePath = "/probe.txt";
     private static readonly byte[] Content = "FusePidProbe\nRead this file to trigger PID/UID/GID/process inspection.\n"u8.ToArray();
@@ -55,7 +72,10 @@ internal sealed class ProbeOperations : IFuseOperations
         | PosixFileMode.OthersRead;
 
     public void Init(ref FuseConnInfo fuse_conn_info)
-        => Console.WriteLine($"Initializing file system, driver capabilities: {fuse_conn_info.capable}, requested: {fuse_conn_info.want}");
+    {
+        Console.WriteLine($"Initializing file system, driver capabilities: {fuse_conn_info.capable}, requested: {fuse_conn_info.want}");
+        onInit();
+    }
 
     public PosixResult GetAttr(ReadOnlyNativeMemory<byte> fileNamePtr, out FuseFileStat stat, ref FuseFileInfo fileInfo)
     {
