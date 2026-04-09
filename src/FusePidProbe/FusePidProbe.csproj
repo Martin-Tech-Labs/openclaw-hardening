@@ -8,11 +8,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FuseSharp" Version="1.4.0" />
+    <PackageReference Include="LTRData.FuseDotNet" Version="1.0.0.14" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\FuseSharp\src\FuseSharp\FuseSharp\FuseSharp.csproj" />
+    <None Include="..\..\NuGet.Config" Link="NuGet.Config" />
   </ItemGroup>
 
 </Project>
