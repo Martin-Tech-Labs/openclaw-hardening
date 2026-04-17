@@ -227,9 +227,9 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 
     private static IEnumerable<FuseDirEntry> EnumerateEntries()
     {
-        yield return new(Name: ".", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
-        yield return new(Name: "..", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
-        yield return new(Name: "probe.txt", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Regular });
+        yield return new(Name: ".", Offset: 1, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
+        yield return new(Name: "..", Offset: 2, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
+        yield return new(Name: "probe.txt", Offset: 3, Flags: 0, Stat: new() { st_mode = PosixFileMode.Regular, st_size = Content.LongLength, st_nlink = 1 });
     }
 
 
