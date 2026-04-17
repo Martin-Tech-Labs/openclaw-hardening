@@ -24,7 +24,7 @@ internal static class Program
         var mountPoint = Path.GetFullPath(args[0]);
         Directory.CreateDirectory(mountPoint);
 
-        var fuseArgs = new[] { "-f", "-s", mountPoint };
+        var fuseArgs = new[] { "FusePidProbe", "-f", "-s", mountPoint };
         using var mountStarted = new ManualResetEventSlim(false);
         using var service = new FuseService(new ProbeOperations(() => mountStarted.Set()), fuseArgs);
 
@@ -67,13 +67,15 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 
     public void Init(ref FuseConnInfo fuse_conn_info)
     {
-        Console.WriteLine($"Initializing file system, driver capabilities: {fuse_conn_info.capable}, requested: {fuse_conn_info.want}");
+        Console.WriteLine($"[trace] entering Init, capable={fuse_conn_info.capable}, want={fuse_conn_info.want}");
         onInit();
+        Console.WriteLine("[trace] leaving Init");
     }
 
     public PosixResult GetAttr(ReadOnlyNativeMemory<byte> fileNamePtr, out FuseFileStat stat, ref FuseFileInfo fileInfo)
     {
         var fileName = FuseHelper.GetString(fileNamePtr);
+        Console.WriteLine($"[trace] entering getattr path={fileName}");
         stat = default;
 
         if (fileName == "/")
@@ -81,6 +83,7 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
             stat.st_mode = dirMode;
             stat.st_nlink = 2;
             stat.st_atim = stat.st_mtim = stat.st_ctim = stat.st_birthtim = TimeSpec.Now();
+            Console.WriteLine("[trace] leaving getattr / -> Success");
             return PosixResult.Success;
         }
 
@@ -90,9 +93,11 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
             stat.st_nlink = 1;
             stat.st_size = Content.LongLength;
             stat.st_atim = stat.st_mtim = stat.st_ctim = stat.st_birthtim = TimeSpec.Now();
+            Console.WriteLine("[trace] leaving getattr probe.txt -> Success");
             return PosixResult.Success;
         }
 
+        Console.WriteLine("[trace] leaving getattr -> ENOENT");
         return PosixResult.ENOENT;
     }
 
@@ -107,38 +112,58 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
     public PosixResult ReadDir(ReadOnlyNativeMemory<byte> fileNamePtr, out IEnumerable<FuseDirEntry> entries, ref FuseFileInfo fileInfo, long offset, FuseReadDirFlags flags)
     {
         var fileName = FuseHelper.GetString(fileNamePtr);
+        Console.WriteLine($"[trace] entering readdir path={fileName} offset={offset} flags={flags}");
         if (fileName != "/")
         {
             entries = Array.Empty<FuseDirEntry>();
+            Console.WriteLine("[trace] leaving readdir -> ENOENT");
             return PosixResult.ENOENT;
         }
 
         LogAccess("readdir", fileName, fileInfo);
-        entries = EnumerateEntries();
+        var materialized = EnumerateEntries().ToArray();
+        Console.WriteLine($"[trace] readdir prepared {materialized.Length} entries: {string.Join(", ", materialized.Select(e => e.Name))}");
+        entries = materialized;
+        Console.WriteLine("[trace] leaving readdir -> Success");
         return PosixResult.Success;
     }
 
     public PosixResult Open(ReadOnlyNativeMemory<byte> fileNamePtr, ref FuseFileInfo fileInfo)
     {
         var fileName = FuseHelper.GetString(fileNamePtr);
-        if (fileName != ProbePath) return PosixResult.ENOENT;
+        Console.WriteLine($"[trace] entering open path={fileName}");
+        if (fileName != ProbePath)
+        {
+            Console.WriteLine("[trace] leaving open -> ENOENT");
+            return PosixResult.ENOENT;
+        }
         LogAccess("open", fileName, fileInfo);
+        Console.WriteLine("[trace] leaving open -> Success");
         return PosixResult.Success;
     }
 
     public PosixResult Read(ReadOnlyNativeMemory<byte> fileNamePtr, NativeMemory<byte> buffer, long position, out int readLength, ref FuseFileInfo fileInfo)
     {
         var fileName = FuseHelper.GetString(fileNamePtr);
+        Console.WriteLine($"[trace] entering read path={fileName} position={position} bufferLength={buffer.Length}");
         readLength = 0;
-        if (fileName != ProbePath) return PosixResult.ENOENT;
+        if (fileName != ProbePath)
+        {
+            Console.WriteLine("[trace] leaving read -> ENOENT");
+            return PosixResult.ENOENT;
+        }
 
         LogAccess("read", fileName, fileInfo);
         if (position >= Content.Length)
+        {
+            Console.WriteLine("[trace] leaving read -> Success EOF");
             return PosixResult.Success;
+        }
 
         var count = Math.Min(buffer.Length, Content.Length - (int)position);
         Content.AsSpan((int)position, count).CopyTo(buffer.Span);
         readLength = count;
+        Console.WriteLine($"[trace] leaving read -> Success readLength={readLength}");
         return PosixResult.Success;
     }
 
@@ -182,9 +207,10 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 
     private void LogAccess(string operation, string path, FuseFileInfo fileInfo)
     {
-        var pid = GetIntProperty(fileInfo.Context, "Pid") ?? GetIntProperty(fileInfo.Context, "ProcessId") ?? -1;
-        var uid = GetUIntProperty(fileInfo.Context, "Uid") ?? GetUIntProperty(fileInfo.Context, "UserId") ?? 0;
-        var gid = GetUIntProperty(fileInfo.Context, "Gid") ?? GetUIntProperty(fileInfo.Context, "GroupId") ?? 0;
+        var context = Fuse.GetContext();
+        var pid = context.Pid;
+        var uid = context.Uid;
+        var gid = context.Gid;
         var exePath = pid > 0 ? TryGetExecutablePath(pid) ?? "<unknown>" : "<unknown>";
         var signature = GetCodeSignatureSummary(exePath);
         var parentTree = pid > 0 ? string.Join(" -> ", GetParentTree(pid)) : "<unknown>";
@@ -206,25 +232,6 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
         yield return new(Name: "probe.txt", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Regular });
     }
 
-    private static int? GetIntProperty(object? obj, string name)
-    {
-        if (obj is null) return null;
-        var p = obj.GetType().GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-        var value = p?.GetValue(obj);
-        if (value is int i) return i;
-        if (value is uint ui) return (int)ui;
-        return null;
-    }
-
-    private static uint? GetUIntProperty(object? obj, string name)
-    {
-        if (obj is null) return null;
-        var p = obj.GetType().GetProperty(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.IgnoreCase);
-        var value = p?.GetValue(obj);
-        if (value is uint ui) return ui;
-        if (value is int i) return (uint)i;
-        return null;
-    }
 
     private static string? TryGetExecutablePath(int pid)
     {
