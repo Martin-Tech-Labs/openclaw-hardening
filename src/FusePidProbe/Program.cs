@@ -52,6 +52,11 @@ internal static class Program
 
 internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 {
+    private sealed class DirectoryState(IReadOnlyList<FuseDirEntry> entries)
+    {
+        public IReadOnlyList<FuseDirEntry> Entries { get; } = entries;
+    }
+
     private const string ProbePath = "/probe.txt";
     private static readonly byte[] Content = "FusePidProbe\nRead this file to trigger PID/UID/GID/process inspection.\n"u8.ToArray();
 
@@ -106,6 +111,8 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
         var fileName = FuseHelper.GetString(fileNamePtr);
         if (fileName != "/") return PosixResult.ENOENT;
         LogAccess("opendir", fileName, fileInfo);
+        fileInfo.Context = new DirectoryState(EnumerateEntries().ToArray());
+        Console.WriteLine("[trace] opendir created DirectoryState handle");
         return PosixResult.Success;
     }
 
@@ -121,9 +128,18 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
         }
 
         LogAccess("readdir", fileName, fileInfo);
-        var materialized = EnumerateEntries().ToArray();
-        Console.WriteLine($"[trace] readdir prepared {materialized.Length} entries: {string.Join(", ", materialized.Select(e => e.Name))}");
-        entries = materialized;
+        var state = fileInfo.Context as DirectoryState ?? new DirectoryState(EnumerateEntries().ToArray());
+        fileInfo.Context = state;
+        var materialized = state.Entries;
+        var startIndex = 0;
+        if (offset > 0)
+        {
+            var matchIndex = materialized.Select((entry, index) => (entry, index)).FirstOrDefault(x => x.entry.Offset == offset).index;
+            startIndex = matchIndex;
+        }
+        var selected = materialized.Skip(startIndex).ToArray();
+        Console.WriteLine($"[trace] readdir using DirectoryState count={materialized.Count}, incoming offset={offset}, startIndex={startIndex}, returning {selected.Length}: {string.Join(", ", selected.Select(e => $"{e.Name}@{e.Offset}"))}");
+        entries = selected;
         Console.WriteLine("[trace] leaving readdir -> Success");
         return PosixResult.Success;
     }
@@ -178,7 +194,12 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 
     public PosixResult FSyncDir(ReadOnlyNativeMemory<byte> fileNamePtr, bool datasync, ref FuseFileInfo fileInfo) => PosixResult.Success;
     public PosixResult ReadLink(ReadOnlyNativeMemory<byte> fileNamePtr, NativeMemory<byte> target) => PosixResult.ENOENT;
-    public PosixResult ReleaseDir(ReadOnlyNativeMemory<byte> fileNamePtr, ref FuseFileInfo fileInfo) => PosixResult.Success;
+    public PosixResult ReleaseDir(ReadOnlyNativeMemory<byte> fileNamePtr, ref FuseFileInfo fileInfo)
+    {
+        fileInfo.Context = null;
+        Console.WriteLine("[trace] releasedir cleared DirectoryState handle");
+        return PosixResult.Success;
+    }
     public PosixResult MkDir(ReadOnlyNativeMemory<byte> fileNamePtr, PosixFileMode mode) => PosixResult.EROFS;
     public PosixResult Release(ReadOnlyNativeMemory<byte> fileNamePtr, ref FuseFileInfo fileInfo) => PosixResult.Success;
     public PosixResult RmDir(ReadOnlyNativeMemory<byte> fileNamePtr) => PosixResult.EROFS;
@@ -227,9 +248,9 @@ internal sealed class ProbeOperations(Action onInit) : IFuseOperations
 
     private static IEnumerable<FuseDirEntry> EnumerateEntries()
     {
-        yield return new(Name: ".", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
-        yield return new(Name: "..", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory });
-        yield return new(Name: "probe.txt", Offset: 0, Flags: 0, Stat: new() { st_mode = PosixFileMode.Regular });
+        yield return new(Name: ".", Offset: 1, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory, st_nlink = 2 });
+        yield return new(Name: "..", Offset: 2, Flags: 0, Stat: new() { st_mode = PosixFileMode.Directory, st_nlink = 2 });
+        yield return new(Name: "probe.txt", Offset: 3, Flags: 0, Stat: new() { st_mode = PosixFileMode.Regular, st_size = Content.LongLength, st_nlink = 1 });
     }
 
 
